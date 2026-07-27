@@ -35,7 +35,9 @@
 </picture>
 
 <picture>
-  <img alt="Contribution graph, eaten by a snake" src="contributions.svg">
+  <source media="(prefers-color-scheme: dark)" srcset="contributions-dark.svg">
+  <source media="(prefers-color-scheme: light)" srcset="contributions-light.svg">
+  <img alt="Contribution graph, eaten by a snake" src="contributions-dark.svg">
 </picture>
 
 <picture>

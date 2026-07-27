@@ -849,26 +849,47 @@ def render_footer(theme, out_path, duration=420):
 # snake contribution graph, recoloured to match
 # --------------------------------------------------------------------------- #
 
-def recolor_snake():
+# --cs is the snake, --c0..--c4 the contribution levels, --ce an eaten cell,
+# --cb the cell stroke. snk emits no --c0 in its dark block, which would leave
+# pale cells on a dark canvas, so every variant declares the full set.
+# --ce sits a hair off the page background rather than exactly on it, so an
+# empty day still reads as a cell instead of vanishing.
+SNAKE = {
+    "dark": ("--cb:#7cf5d52e;--cs:#7cf5d5;--ce:#11201d;--c0:#11201d;"
+             "--c1:#0e3a32;--c2:#17715f;--c3:#2fa98f;--c4:#7cf5d5"),
+    "light": ("--cb:#0b2e2824;--cs:#0c3c33;--ce:#f4f8f6;--c0:#f4f8f6;"
+              "--c1:#cfe8df;--c2:#8ccbb7;--c3:#3f9c84;--c4:#0c3c33"),
+}
+
+
+def render_snake():
+    """Split contributions.svg into one file per theme.
+
+    The generated SVG themes itself with its own prefers-color-scheme block,
+    but an SVG loaded through <img> resolves that against the *operating
+    system*, not GitHub's theme toggle -- so the snake ends up disagreeing
+    with every other image on the page. Stripping the media query and emitting
+    two fixed palettes puts it back under the same <picture> switch as the
+    rest of the README.
+
+    contributions.svg stays untouched as the input, so re-running snk and
+    rebuilding is all it takes to refresh the graph.
+    """
     src = os.path.join(ROOT, "contributions.svg")
     if not os.path.exists(src):
-        return None
+        return []
     svg = open(src, encoding="utf-8").read()
+    svg = re.sub(r"@media\s*\(prefers-color-scheme:\s*dark\)\s*"
+                 r"\{\s*:root\{[^}]*\}\s*\}", "", svg)
 
-    # --cs is the snake, --c0..--c4 the contribution levels, --ce the eaten
-    # cell, --cb the cell stroke. Both :root blocks are replaced wholesale so
-    # a rerun cannot compound, and so the dark block gets a --c0 of its own
-    # (snk does not emit one, which would leave pale cells on a dark canvas).
-    light = ("--cb:#0b2e2814;--cs:#0c3c33;--ce:#ffffff;--c0:#ffffff;"
-             "--c1:#cfe8df;--c2:#8ccbb7;--c3:#3f9c84;--c4:#0c3c33")
-    dark = ("--cb:#7cf5d514;--cs:#7cf5d5;--ce:#0d1117;--c0:#0d1117;"
-            "--c1:#0e3a32;--c2:#17715f;--c3:#2fa98f;--c4:#7cf5d5")
-
-    blocks = iter([light, dark])
-    svg = re.sub(r":root\{[^}]*\}",
-                 lambda m: ":root{" + next(blocks) + "}", svg, count=2)
-    open(src, "w", encoding="utf-8").write(svg)
-    return src
+    out = []
+    for name, palette in SNAKE.items():
+        variant = re.sub(r":root\{[^}]*\}", ":root{" + palette + "}",
+                         svg, count=1)
+        path = os.path.join(ROOT, "contributions-%s.svg" % name)
+        open(path, "w", encoding="utf-8").write(variant)
+        out.append(path)
+    return out
 
 
 # --------------------------------------------------------------------------- #
@@ -887,7 +908,9 @@ def main():
         for o in outs:
             print("%8.0f KB  %s" % (os.path.getsize(o) / 1024,
                                     os.path.basename(o)))
-    recolor_snake()
+    for o in render_snake():
+        print("%8.0f KB  %s" % (os.path.getsize(o) / 1024,
+                                os.path.basename(o)))
 
 
 if __name__ == "__main__":
