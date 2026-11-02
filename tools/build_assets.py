@@ -348,7 +348,7 @@ def render_hero(theme, out_path, frames=16, duration=110):
 
     # ---- top strip + wordmark -------------------------------------------- #
     label(d, (M + 4, 30), "@" + USER.upper(), theme)
-    label(d, (W - M - 4, 30), "BRATISLAVA, SK  /  UTC+1", theme,
+    label(d, (W - M - 4, 30), "BRATISLAVA, SK  /  UTC+1:00", theme,
           align="right")
 
     wm = "GREENYBEANY"
@@ -389,7 +389,7 @@ def render_hero(theme, out_path, frames=16, duration=110):
     dot_text(img, (cx, cy), clock, cp, theme["text"], off=theme["off"])
     colon_x = cx + (dot_cols(clock[:2]) + 1) * cp
     label(d, (t_clock[0] + pad, t_clock[3] - pad - 18), "TIME NOT FOUND", theme, "faint")
-    label(d, (t_clock[2] - pad, t_clock[3] - pad - 18), "CET", theme,
+    label(d, (t_clock[2] - pad, t_clock[3] - pad - 18), "UTC+1:00", theme,
           "faint", align="right")
 
     # about
