@@ -383,13 +383,13 @@ def render_hero(theme, out_path, frames=16, duration=110):
     # clock
     label(d, (t_clock[0] + pad, t_clock[1] + pad), "LOCAL TIME", theme)
     cp = 16
-    clock = "04:16"
+    clock = "04:04"
     cx = (t_clock[0] + t_clock[2]) / 2 - dot_cols(clock) * cp / 2
     cy = t_clock[1] + 110
     dot_text(img, (cx, cy), clock, cp, theme["text"], off=theme["off"])
-    colon_x = cx + (dot_cols("04") + 1) * cp
-    label(d, (t_clock[0] + pad, t_clock[3] - pad - 18), "CET", theme, "faint")
-    label(d, (t_clock[2] - pad, t_clock[3] - pad - 18), "#0416", theme,
+    colon_x = cx + (dot_cols(clock[:2]) + 1) * cp
+    label(d, (t_clock[0] + pad, t_clock[3] - pad - 18), "TIME NOT FOUND", theme, "faint")
+    label(d, (t_clock[2] - pad, t_clock[3] - pad - 18), "CET", theme,
           "faint", align="right")
 
     # about
