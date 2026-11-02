@@ -1,22 +1,22 @@
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="hero-dark.gif">
   <source media="(prefers-color-scheme: light)" srcset="hero-light.gif">
-  <img alt="GreenyBeany — BIOS setup screen. Robotics &amp; Cybernetics at FEI STU Bratislava." src="hero-dark.gif">
+  <img alt="GreenyBeany — Robotics &amp; Cybernetics student at FEI STU Bratislava. I build things that move." src="hero-dark.gif">
 </picture>
 
-<a href="https://github.com/Greenythebeany/Beany-s-Discord-Quest-Maker" title="Beany's Discord Quest Maker — TUI app that clears Discord's Orb quests for games you don't own">
+<a href="https://github.com/Greenythebeany/triptych" title="Triptych — open-source music app for your own Jellyfin server">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="card-questmaker-dark.gif">
-    <source media="(prefers-color-scheme: light)" srcset="card-questmaker-light.gif">
-    <img alt="MODULE 01/03 — Beany's Discord Quest Maker. TUI app that clears Discord's Orb quests for games you don't own." src="card-questmaker-dark.gif">
+    <source media="(prefers-color-scheme: dark)" srcset="card-triptych-dark.gif">
+    <source media="(prefers-color-scheme: light)" srcset="card-triptych-light.gif">
+    <img alt="MODULE 01/03 — Triptych. Open-source music app for your own Jellyfin server." src="card-triptych-dark.gif">
   </picture>
 </a>
 
-<a href="https://github.com/Greenythebeany/BeanyBox" title="BeanyBox — terminal-styled desktop mail client for Gmail">
+<a href="https://github.com/Greenythebeany/BeanyIK" title="BeanyIK — drag &amp; drop robot kinematics builder">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="card-beanybox-dark.gif">
-    <source media="(prefers-color-scheme: light)" srcset="card-beanybox-light.gif">
-    <img alt="MODULE 02/03 — BeanyBox. Terminal-styled desktop mail client for Gmail." src="card-beanybox-dark.gif">
+    <source media="(prefers-color-scheme: dark)" srcset="card-beanyik-dark.gif">
+    <source media="(prefers-color-scheme: light)" srcset="card-beanyik-light.gif">
+    <img alt="MODULE 02/03 — BeanyIK. Drag &amp; drop robot kinematics builder with forward and inverse kinematics." src="card-beanyik-dark.gif">
   </picture>
 </a>
 
@@ -31,7 +31,7 @@
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="stack-dark.gif">
   <source media="(prefers-color-scheme: light)" srcset="stack-light.gif">
-  <img alt="Detecting IDE devices — C/C++, Python, Java, JavaScript, MATLAB, Simulink, Arduino, Git, Linux, VS Code / CLion / IDEA" src="stack-dark.gif">
+  <img alt="Stack — C/C++, Python, Java, JavaScript, MATLAB, Simulink, Arduino, Git, Linux, VS Code / CLion / IDEA" src="stack-dark.gif">
 </picture>
 
 <picture>
@@ -43,5 +43,5 @@
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="footer-dark.gif">
   <source media="(prefers-color-scheme: light)" srcset="footer-light.gif">
-  <img alt="C:\USERS\GREENYBEANY&gt; — thanks for stopping by, system halted" src="footer-dark.gif">
+  <img alt="Thanks for stopping by" src="footer-dark.gif">
 </picture>

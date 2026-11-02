@@ -1,56 +1,50 @@
 """Renders every image used by the profile README.
 
-Everything is drawn on a monospace character grid to keep the "BIOS setup
-screen" look consistent across the hero, the project cards and the stack table.
+Everything is drawn in the Nothing OS idiom: black widget tiles floating on
+the page, white dot-matrix type lit on an LED grid, and exactly one red accent
+per image.
 
     python tools/build_assets.py
-
-Drop a portrait photo at <root>/face.jpg (or face.png) to get a sharp ASCII
-face; without one the script falls back to recovering a luminance map out of
-the previous hero render.
 """
 
+import math
 import os
 import random
 import re
 
-import numpy as np
-from PIL import (Image, ImageChops, ImageDraw, ImageEnhance, ImageFilter,
-                 ImageFont, ImageOps)
+from PIL import Image, ImageDraw, ImageFont
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FONTS = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts")
-REG = os.path.join(FONTS, "consola.ttf")
-BOLD = os.path.join(FONTS, "consolab.ttf")
+SANS = os.path.join(FONTS, "bahnschrift.ttf")
+ICONS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icons")
 
 USER = "Greenythebeany"
 
-# backgrounds match GitHub's canvas so the panels bleed into the page
+# canvases match GitHub's page background so the tiles float on it
 DARK = {
     "bg": (13, 17, 23),
-    "faint": (14, 58, 50),
-    "dim": (26, 104, 89),
-    "mid": (47, 169, 143),
-    "bright": (124, 245, 213),
-    "hot": (196, 255, 240),
-    "rule": (35, 126, 108),
-    "wordmark": (13, 51, 44),
-    "wordmark_edge": (24, 92, 79),
+    "tile": (0, 0, 0),
+    "edge": (38, 38, 38),
+    "inset": (17, 17, 17),
+    "off": (36, 36, 36),
+    "faint": (84, 84, 84),
+    "dim": (150, 150, 150),
+    "text": (242, 242, 242),
+    "accent": (215, 25, 33),
 }
 
 LIGHT = {
     "bg": (255, 255, 255),
-    "faint": (198, 214, 208),
-    "dim": (132, 163, 154),
-    "mid": (58, 113, 100),
-    "bright": (10, 58, 48),
-    "hot": (2, 30, 24),
-    "rule": (120, 164, 151),
-    "wordmark": (228, 238, 234),
-    "wordmark_edge": (198, 216, 208),
+    "tile": (242, 242, 242),
+    "edge": (226, 226, 226),
+    "inset": (231, 231, 231),
+    "off": (214, 214, 214),
+    "faint": (168, 168, 168),
+    "dim": (100, 100, 100),
+    "text": (14, 14, 14),
+    "accent": (215, 25, 33),
 }
-
-RAMP = " .`',:;~-+=*!?%$#&@\u2592\u2593\u2588"
 
 
 # --------------------------------------------------------------------------- #
@@ -60,10 +54,12 @@ RAMP = " .`',:;~-+=*!?%$#&@\u2592\u2593\u2588"
 _font_cache = {}
 
 
-def mono(size, bold=False):
-    key = (size, bold)
+def sans(size, weight="Regular"):
+    key = (size, weight)
     if key not in _font_cache:
-        _font_cache[key] = ImageFont.truetype(BOLD if bold else REG, size)
+        f = ImageFont.truetype(SANS, size)
+        f.set_variation_by_name(weight)
+        _font_cache[key] = f
     return _font_cache[key]
 
 
@@ -90,21 +86,15 @@ def text(d, xy, s, font, fill, tracking=0, align="left"):
     return w
 
 
-def frame(d, box, color, radius=0):
-    if radius:
-        d.rounded_rectangle(box, radius=radius, outline=color, width=1)
-    else:
-        d.rectangle(box, outline=color, width=1)
-
-
-def wrap(s, n):
+def wrap(s, font, max_w):
     out, line = [], ""
     for word in s.split():
-        if len(line) + len(word) + 1 > n:
+        trial = (line + " " + word).strip()
+        if line and font.getlength(trial) > max_w:
             out.append(line)
             line = word
         else:
-            line = (line + " " + word).strip()
+            line = trial
     if line:
         out.append(line)
     return out
@@ -114,30 +104,44 @@ def mix(a, b, t):
     return tuple(int(round(a[i] + (b[i] - a[i]) * t)) for i in range(3))
 
 
-# --------------------------------------------------------------------------- #
-# animation output
-# --------------------------------------------------------------------------- #
+def _rr_mask(w, h, r, s=4):
+    m = Image.new("L", (w * s, h * s), 0)
+    ImageDraw.Draw(m).rounded_rectangle([0, 0, w * s - 1, h * s - 1],
+                                        radius=r * s, fill=255)
+    return m.resize((w, h), Image.LANCZOS)
 
-def sweep(img, box, y, height, theme, strength=0.55):
-    """A CRT refresh band: a horizontal slice gets brighter *and* picks up an
-    additive phosphor glow, so the beam is visible over empty background and
-    not just over the glyphs."""
-    x0, y0, x1, y1 = box
-    glow = theme["mid"]
-    steps = 6
-    for s in range(steps):
-        top = int(y + height * s / steps)
-        bottom = int(y + height * (s + 1) / steps)
-        top, bottom = max(top, y0), min(bottom, y1)
-        if bottom <= top:
-            continue
-        # triangular falloff across the band
-        f = (1.0 - abs((s + 0.5) / steps - 0.5) * 2) * strength
-        band = img.crop((x0, top, x1, bottom))
-        band = ImageEnhance.Brightness(band).enhance(1 + 0.75 * f)
-        wash = Image.new("RGB", band.size,
-                         tuple(int(c * 0.30 * f) for c in glow))
-        img.paste(ImageChops.add(band, wash), (x0, top))
+
+def tile(img, box, theme, fill="tile", radius=28, edge=True):
+    """A widget tile. Drawn supersampled: PIL's own rounded_rectangle has no
+    antialiasing and the corners would stair-step on a 2x display."""
+    x0, y0, x1, y1 = [int(round(v)) for v in box]
+    w, h = x1 - x0, y1 - y0
+    if edge:
+        img.paste(theme["edge"], (x0, y0), _rr_mask(w, h, radius))
+        img.paste(theme[fill], (x0 + 1, y0 + 1),
+                  _rr_mask(w - 2, h - 2, radius - 1))
+    else:
+        img.paste(theme[fill], (x0, y0), _rr_mask(w, h, radius))
+
+
+_dot_cache = {}
+
+
+def dot(img, xy, r, color):
+    """One antialiased LED, pasted from a cached sprite per radius."""
+    key = max(1, int(round(r * 4)))
+    m = _dot_cache.get(key)
+    if m is None:
+        rr, s = key / 4.0, 4
+        size = int(math.ceil(rr * 2)) + 2
+        big = Image.new("L", (size * s, size * s), 0)
+        c = size * s / 2
+        ImageDraw.Draw(big).ellipse([c - rr * s, c - rr * s,
+                                     c + rr * s, c + rr * s], fill=255)
+        m = _dot_cache[key] = big.resize((size, size), Image.LANCZOS)
+    size = m.size[0]
+    img.paste(color, (int(round(xy[0] - size / 2)),
+                      int(round(xy[1] - size / 2))), m)
 
 
 def save_gif(frames, path, duration):
@@ -151,404 +155,360 @@ def save_gif(frames, path, duration):
 
 
 # --------------------------------------------------------------------------- #
-# glitched display type
+# dot-matrix type: a 5x7 LED face, narrow glyphs for punctuation
 # --------------------------------------------------------------------------- #
 
-def glitch_text(s, font, tracking, fg, ghost, seed=7):
-    """Render display type into an RGBA tile with sliced/offset scanlines."""
-    w = int(width_of(s, font, tracking)) + 40
-    asc, desc = font.getmetrics()
-    h = asc + desc + 20
-    tile = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-    td = ImageDraw.Draw(tile)
-    text(td, (20, 8), s, font, ghost + (200,), tracking)
-
-    solid = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-    sd = ImageDraw.Draw(solid)
-    text(sd, (20, 8), s, font, fg + (255,), tracking)
-
-    rng = random.Random(seed)
-    out = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-    out.alpha_composite(tile, (rng.randint(3, 7), 0))
-
-    y = 0
-    while y < h:
-        band = rng.randint(3, 11)
-        strip = solid.crop((0, y, w, min(y + band, h)))
-        dx = rng.choice([0, 0, 0, -6, -3, 3, 6, 11])
-        out.alpha_composite(strip, (max(0, dx), y))
-        y += band
-
-    # a couple of hard dropouts, like a bad refresh
-    od = ImageDraw.Draw(out)
-    for _ in range(3):
-        yy = rng.randint(8, h - 12)
-        od.rectangle([0, yy, w, yy + rng.randint(1, 3)], fill=(0, 0, 0, 0))
-    return out
-
-
-# --------------------------------------------------------------------------- #
-# the ASCII portrait
-# --------------------------------------------------------------------------- #
-
-RECOVERED = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                         "face-recovered.png")
-_face = None
-
-
-def fit_aspect(im, target, bias=0.42):
-    """Centre-crop to a width/height ratio, sitting the window slightly high
-    so the crop takes shoulders off rather than hair."""
-    w, h = im.size
-    if w / h < target:
-        nh = int(w / target)
-        top = int((h - nh) * bias)
-        return im.crop((0, top, w, top + nh))
-    nw = int(h * target)
-    lf = (w - nw) // 2
-    return im.crop((lf, 0, lf + nw, h))
+GLYPHS = {
+    "A": [".###.", "#...#", "#...#", "#####", "#...#", "#...#", "#...#"],
+    "B": ["####.", "#...#", "#...#", "####.", "#...#", "#...#", "####."],
+    "C": [".###.", "#...#", "#....", "#....", "#....", "#...#", ".###."],
+    "D": ["####.", "#...#", "#...#", "#...#", "#...#", "#...#", "####."],
+    "E": ["#####", "#....", "#....", "####.", "#....", "#....", "#####"],
+    "F": ["#####", "#....", "#....", "####.", "#....", "#....", "#...."],
+    "G": [".###.", "#...#", "#....", "#.###", "#...#", "#...#", ".####"],
+    "H": ["#...#", "#...#", "#...#", "#####", "#...#", "#...#", "#...#"],
+    "I": ["###", ".#.", ".#.", ".#.", ".#.", ".#.", "###"],
+    "J": ["..###", "...#.", "...#.", "...#.", "...#.", "#..#.", ".##.."],
+    "K": ["#...#", "#..#.", "#.#..", "##...", "#.#..", "#..#.", "#...#"],
+    "L": ["#....", "#....", "#....", "#....", "#....", "#....", "#####"],
+    "M": ["#...#", "##.##", "#.#.#", "#.#.#", "#...#", "#...#", "#...#"],
+    "N": ["#...#", "##..#", "##..#", "#.#.#", "#..##", "#..##", "#...#"],
+    "O": [".###.", "#...#", "#...#", "#...#", "#...#", "#...#", ".###."],
+    "P": ["####.", "#...#", "#...#", "####.", "#....", "#....", "#...."],
+    "Q": [".###.", "#...#", "#...#", "#...#", "#.#.#", "#..#.", ".##.#"],
+    "R": ["####.", "#...#", "#...#", "####.", "#.#..", "#..#.", "#...#"],
+    "S": [".####", "#....", "#....", ".###.", "....#", "....#", "####."],
+    "T": ["#####", "..#..", "..#..", "..#..", "..#..", "..#..", "..#.."],
+    "U": ["#...#", "#...#", "#...#", "#...#", "#...#", "#...#", ".###."],
+    "V": ["#...#", "#...#", "#...#", "#...#", "#...#", ".#.#.", "..#.."],
+    "W": ["#...#", "#...#", "#...#", "#.#.#", "#.#.#", "#.#.#", ".#.#."],
+    "X": ["#...#", "#...#", ".#.#.", "..#..", ".#.#.", "#...#", "#...#"],
+    "Y": ["#...#", "#...#", ".#.#.", "..#..", "..#..", "..#..", "..#.."],
+    "Z": ["#####", "....#", "...#.", "..#..", ".#...", "#....", "#####"],
+    "0": [".###.", "#...#", "#...#", "#...#", "#...#", "#...#", ".###."],
+    "1": ["..#..", ".##..", "..#..", "..#..", "..#..", "..#..", ".###."],
+    "2": [".###.", "#...#", "....#", "...#.", "..#..", ".#...", "#####"],
+    "3": ["#####", "...#.", "..#..", "...#.", "....#", "#...#", ".###."],
+    "4": ["...#.", "..##.", ".#.#.", "#..#.", "#####", "...#.", "...#."],
+    "5": ["#####", "#....", "####.", "....#", "....#", "#...#", ".###."],
+    "6": ["..##.", ".#...", "#....", "####.", "#...#", "#...#", ".###."],
+    "7": ["#####", "....#", "...#.", "..#..", ".#...", ".#...", ".#..."],
+    "8": [".###.", "#...#", "#...#", ".###.", "#...#", "#...#", ".###."],
+    "9": [".###.", "#...#", "#...#", ".####", "....#", "...#.", ".##.."],
+    " ": ["...", "...", "...", "...", "...", "...", "..."],
+    ":": [".", "#", ".", ".", ".", "#", "."],
+    ".": [".", ".", ".", ".", ".", ".", "#"],
+    "!": ["#", "#", "#", "#", "#", ".", "#"],
+    "'": ["#", "#", ".", ".", ".", ".", "."],
+    "-": ["....", "....", "....", "####", "....", "....", "...."],
+    "/": ["....#", "....#", "...#.", "..#..", ".#...", "#....", "#...."],
+    ">": ["#...", ".#..", "..#.", "...#", "..#.", ".#..", "#..."],
+    "&": [".##..", "#..#.", "#.#..", ".#...", "#.#.#", "#..#.", ".##.#"],
+    "%": ["##..#", "##..#", "...#.", "..#..", ".#...", "#..##", "#..##"],
+}
 
 
-def curve(im, floor=0.30, gamma=0.85, blur=0.7):
-    """Push the backdrop to true black and stretch what is left, so the ramp
-    spends all of its glyphs on the face instead of on grain."""
-    if blur:
-        im = im.filter(ImageFilter.GaussianBlur(blur))
-    a = np.asarray(im).astype(float) / 255.0
-    lo, hi = np.percentile(a, 3), np.percentile(a, 97)
-    if hi - lo < 1e-6:
-        hi = lo + 1e-6
-    a = np.clip((a - lo) / (hi - lo), 0, 1)
-    a = np.clip((a - floor) / (1 - floor), 0, 1) ** gamma
-    return Image.fromarray((a * 255).astype("uint8"))
+def dot_cols(s):
+    return sum(len(GLYPHS[c][0]) for c in s) + max(0, len(s) - 1)
 
 
-def load_face():
-    """Luminance source for the portrait: a real photo if one is present,
-    otherwise the tone map recovered out of the very first hero render (kept
-    beside this script, because main() overwrites hero-dark.png)."""
-    global _face
-    if _face is not None:
-        return _face
-
-    src, real = None, False
-    for name in ("face.jpg", "face.png", "face.jpeg", "me.jpg", "me.png"):
-        p = os.path.join(ROOT, name)
-        if os.path.exists(p):
-            # a light studio backdrop has to become empty space, not a wall
-            src = ImageOps.invert(Image.open(p).convert("L"))
-            src = src.resize((260, int(260 * src.height / src.width)),
-                             Image.LANCZOS)
-            real = True
-            break
-
-    if src is None and os.path.exists(RECOVERED):
-        src = Image.open(RECOVERED).convert("L")
-
-    if src is None:
-        legacy = os.path.join(ROOT, "hero-dark.png")
-        if os.path.exists(legacy):
-            src = Image.open(legacy).convert("L").crop((76, 330, 620, 1072))
-            src = ImageOps.autocontrast(src.resize((136, 186), Image.LANCZOS),
-                                        cutoff=(0.5, 6))
-            src.save(RECOVERED)
-        else:
-            src = Image.new("L", (100, 130), 0)
-
-    _face = (curve(fit_aspect(src, 0.88), floor=0.30 if not real else 0.24),
-             real)
-    return _face
+def dot_text(img, xy, s, pitch, color, off=None, align="left", r=None,
+             off_r=None):
+    """Light a string on the LED grid. With `off`, the unlit cells of each
+    character cell are drawn too, so the word sits on a visible matrix."""
+    r = r or pitch * 0.36
+    off_r = off_r or pitch * 0.2
+    w = dot_cols(s) * pitch
+    x, y = xy
+    if align == "right":
+        x -= w
+    elif align == "center":
+        x -= w / 2
+    for k, ch in enumerate(s):
+        g = GLYPHS[ch]
+        gw = len(g[0])
+        for j, row in enumerate(g):
+            for i, c in enumerate(row):
+                if c == "#" or off:
+                    lit = c == "#"
+                    dot(img, (x + (i + 0.5) * pitch, y + (j + 0.5) * pitch),
+                        r if lit else off_r, color if lit else off)
+            if off and k < len(s) - 1:
+                dot(img, (x + (gw + 0.5) * pitch, y + (j + 0.5) * pitch),
+                    off_r, off)
+        x += (gw + 1) * pitch
+    return w
 
 
-def portrait(d, box, theme, cw, ch, gamma=1.0):
-    x0, y0, x1, y1 = box
-    cols = int((x1 - x0) // cw)
-    rows = int((y1 - y0) // ch)
+class Grid:
+    """An LED matrix filling a box. Shapes are rasterised onto its cells, so
+    lines and curves come out as the stepped dot runs of a real panel."""
 
-    src, _ = load_face()
-    sw, sh = src.size
-    # fit inside the panel while respecting the 2:1 character cell
-    scale = min(cols / sw, rows * (ch / cw) / sh)
-    gw = max(1, int(sw * scale))
-    gh = max(1, int(sh * scale * (cw / ch)))
-    grid = src.resize((gw, gh), Image.LANCZOS)
-    px = grid.load()
+    def __init__(self, box, pitch):
+        x0, y0, x1, y1 = box
+        self.p = pitch
+        self.cols = int((x1 - x0) // pitch)
+        self.rows = int((y1 - y0) // pitch)
+        self.ox = x0 + ((x1 - x0) - self.cols * pitch) / 2
+        self.oy = y0 + ((y1 - y0) - self.rows * pitch) / 2
 
-    ox = x0 + (cols - gw) * cw // 2
-    oy = y0 + (rows - gh) * ch // 2
+    def at(self, i, j):
+        return (self.ox + (i + 0.5) * self.p, self.oy + (j + 0.5) * self.p)
 
-    font = mono(int(ch * 0.95))
-    rng = random.Random(11)
-    top = len(RAMP) - 1
+    def cell(self, x, y):
+        return (int((x - self.ox) // self.p), int((y - self.oy) // self.p))
 
-    for j in range(gh):
-        for i in range(gw):
-            v = pow(px[i, j] / 255.0, gamma)
-            if v < 0.05:
-                continue
-            k = int(round(v * top + rng.uniform(-0.2, 0.2)))
-            k = max(1, min(top, k))
-            if v > 0.78:
-                col = theme["hot"]
-            elif v > 0.45:
-                col = theme["bright"]
-            elif v > 0.22:
-                col = theme["mid"]
-            else:
-                col = theme["dim"]
-            d.text((ox + i * cw, oy + j * ch), RAMP[k], font=font, fill=col)
+    def inside(self, c):
+        return 0 <= c[0] < self.cols and 0 <= c[1] < self.rows
+
+    def blank(self, img, color, r=None):
+        r = r or self.p * 0.3
+        for j in range(self.rows):
+            for i in range(self.cols):
+                dot(img, self.at(i, j), r, color)
+
+    def line(self, a, b):
+        n = max(2, int(math.hypot(b[0] - a[0], b[1] - a[1]) / (self.p / 3)))
+        out = []
+        for k in range(n + 1):
+            t = k / n
+            c = self.cell(a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t)
+            if self.inside(c) and c not in out:
+                out.append(c)
+        return out
+
+    def light(self, img, cells, color, r=None):
+        r = r or self.p * 0.36
+        for c in cells:
+            if self.inside(c):
+                dot(img, self.at(*c), r, color)
+
+
+def label(d, xy, s, theme, tone="dim", size=16, align="left"):
+    return text(d, xy, s, sans(size, "SemiBold"), theme[tone], tracking=2.2,
+                align=align)
 
 
 # --------------------------------------------------------------------------- #
-# copy
+# shared widgets
 # --------------------------------------------------------------------------- #
 
-LOG_HEAD = [
-    ("dim", "0100 GREENYBEANY BIOS (C) 2026 GREENYBEANY SOFTWARE, INC."),
-    ("dim", "0100 SYSTEM CONFIGURATION UTILITY -- VERSION 2.6"),
-    ("faint", "0100"),
-    ("dim", "0101 POST ......................................... OK"),
-    ("dim", "0102 OPERATOR DETECTED ON CHANNEL 0 ................ OK"),
-    ("faint", "0102"),
-    ("mid", "0103 OPERATOR"),
-    ("dim", "0103   HANDLE ........ GREENYBEANY"),
-    ("dim", "0103   ROLE .......... STUDENT / ROBOTICS & CYBERNETICS"),
-    ("dim", "0103   SITE .......... FEI STU BRATISLAVA, SK"),
-    ("dim", "0103   SHELL ......... BASH / ZSH"),
-    ("faint", "0103"),
-    ("mid", "0104 SUBSYSTEMS ENABLED"),
-    ("dim", "0104   [X] EMBEDDED SYSTEMS      [X] CONTROL THEORY"),
-    ("dim", "0104   [X] INDUSTRIAL AUTOMATION [X] SIMULATION"),
-    ("dim", "0104   [X] ROBOTICS              [ ] SLEEP"),
-    ("faint", "0104"),
-    ("mid", "0105 VOLUMES MOUNTED"),
-    ("dim", "0105   /dev/quest  BEANY'S DISCORD QUEST MAKER"),
-    ("dim", "0105   /dev/box    BEANYBOX"),
-    ("dim", "0105   /dev/drive  BEANYDRIVE"),
-    ("faint", "0105"),
-    ("dim", "0106 MEMORY TEST : 640K BASE, 65535K EXTENDED ...... OK"),
-    ("dim", "0107 CAFFEINE BUS : SATURATED ...................... OK"),
-    ("dim", "0108 SEARCHING FOR BOOT RECORD ..................... OK"),
-    ("faint", "0108"),
-]
+def arm_pose(base, links, angles):
+    """Forward kinematics of a planar serial arm; angles are relative, in
+    degrees, measured from the previous link (the first from +x)."""
+    pts = [base]
+    a = 0.0
+    for L, th in zip(links, angles):
+        a += math.radians(th)
+        x, y = pts[-1]
+        pts.append((x + L * math.cos(a), y - L * math.sin(a)))
+    return pts
 
-LOG_BODY = (
-    "I BUILD THINGS THAT MOVE. MOTORS, SERVOS, STATE MACHINES, THE OCCASIONAL "
-    "TERMINAL APP THAT REFUSES TO ACT LIKE ONE. MOST OF WHAT I MAKE STARTS AS A "
-    "SMALL ANNOYANCE -- A CLIENT THAT IS TOO HEAVY, A STORAGE LIMIT THAT IS TOO "
-    "LOW, A CHORE A MACHINE SHOULD BE DOING INSTEAD OF ME -- AND ENDS AS "
-    "SOMETHING I CAN RUN FROM A BLINKING CURSOR. "
-    "I LIKE THE PART OF ENGINEERING WHERE THEORY MEETS A REAL ACTUATOR AND "
-    "IMMEDIATELY DISAGREES WITH THE MODEL. CONTROL LOOPS, SENSOR NOISE, TIMING "
-    "BUDGETS, THE SLOW WORK OF MAKING A SYSTEM BEHAVE THE SAME WAY TWICE. "
-    "STUDYING ROBOTICS AND CYBERNETICS AT FEI STU IN BRATISLAVA. WRITING C WHEN "
-    "IT HAS TO BE FAST, PYTHON WHEN IT HAS TO EXIST BY TOMORROW, MATLAB AND "
-    "SIMULINK WHEN SOMETHING HAS TO BE PROVEN BEFORE IT IS SOLDERED. "
-    "EVERYTHING HERE IS A WORK IN PROGRESS. THAT IS THE POINT. PULL REQUESTS, "
-    "ISSUES AND BAD IDEAS ARE ALL WELCOME."
-)
 
-LOG_TAIL = [
-    ("faint", ""),
-    ("mid", "0109 DUMP 0000:7C00"),
-    ("faint", "0109 7C00  47 52 45 45 4E 59 42 45  41 4E 59 20 42 49 4F 53   GREENYBEANY BIOS"),
-    ("faint", "0109 7C10  20 32 30 32 36 20 2D 2D  20 46 45 49 20 53 54 55    2026 -- FEI STU"),
-    ("faint", "0109 7C20  20 42 52 41 54 49 53 4C  41 56 41 2C 20 53 4B 00    BRATISLAVA, SK."),
-    ("faint", "0109 7C30  52 4F 42 4F 54 49 43 53  20 26 20 43 59 42 45 52   ROBOTICS & CYBER"),
-    ("faint", "0109 7C40  4E 45 54 49 43 53 00 00  53 54 49 4C 4C 20 4C 45   NETICS..STILL LE"),
-    ("faint", "0109 7C50  41 52 4E 49 4E 47 2E 20  41 4C 57 41 59 53 2E 00   ARNING. ALWAYS.."),
-    ("faint", "0109"),
-    ("mid", "010A SEQ"),
-    ("dim", "010A   1. FIND SOMETHING THAT IS SLIGHTLY ANNOYING"),
-    ("dim", "010A   2. OVERBUILD A FIX FOR IT"),
-    ("dim", "010A   3. GIVE IT A TERMINAL UI IT DID NOT NEED"),
-    ("dim", "010A   4. PUSH TO MAIN. GOTO 1"),
-    ("faint", "010A"),
-    ("mid", "010B PRESS <F2> TO ENTER SETUP -- PRESS <ANY> TO CONTINUE"),
-    ("dim", "010B BOOTING FROM /dev/curiosity ..."),
-    ("bright", "010B _"),
-]
+def draw_arm(img, grid, pts, theme, target=None):
+    for a, b in zip(pts, pts[1:]):
+        grid.light(img, grid.line(a, b), theme["text"])
+    for p in pts[:-1]:
+        dot(img, grid.at(*grid.cell(*p)), grid.p * 0.62, theme["text"])
+    if target:
+        dot(img, grid.at(*grid.cell(*target)), grid.p * 0.55,
+            theme["accent"])
 
-ECHO_LINES = [
-    "ECHO [ COFFEE IN, FIRMWARE OUT. ]",
-    "ECHO [ IF IT COMPILES, SHIP IT. IF IT MOVES, MEASURE IT. ]",
-    "ECHO [ THE DEMO WORKED YESTERDAY. THAT COUNTS. ]",
-    "ECHO [ NEVER TRUST A SENSOR THAT AGREES WITH YOU. ]",
-    "ECHO [ ONE MORE COMMIT AND THEN BED. LINE 1 OF 400. ]",
-    "ECHO [ IT IS NOT A BUG, IT IS UNDOCUMENTED FEEDBACK. ]",
-]
 
-BANK1 = ["ROBOTICS", "EMBEDDED", "CONTROL", "AUTOMATION"]
-BANK2 = ["C", "PYTHON", "MATLAB", "JAVA"]
+def ease(t):
+    return (1 - math.cos(math.pi * 2 * t)) / 2
 
 
 # --------------------------------------------------------------------------- #
 # hero
 # --------------------------------------------------------------------------- #
 
+ABOUT = (
+    "I build things that move: motors, servos, state machines and the "
+    "occasional terminal app that refuses to act like one. C when it has to "
+    "be fast, Python when it has to exist by tomorrow, MATLAB and Simulink "
+    "when it has to be proven before it is soldered."
+)
+
+SUBSYSTEMS = [
+    ("EMBEDDED SYSTEMS", True),
+    ("CONTROL THEORY", True),
+    ("INDUSTRIAL AUTOMATION", True),
+    ("SIMULATION", True),
+    ("ROBOTICS", True),
+    ("SLEEP", False),
+]
+
+
 def render_hero(theme, out_path, frames=16, duration=110):
-    W, H = 1800, 1508
+    W, H = 1800, 1076
     img = Image.new("RGB", (W, H), theme["bg"])
     d = ImageDraw.Draw(img)
-
     M = 34
-    f_head = mono(19, True)
-    f_menu = mono(27, True)
-    f_tiny = mono(13)
-    f_small = mono(16)
 
-    # ---- top status line -------------------------------------------------- #
-    y = 26
-    cells = [
-        (M, "GREENYBEANY (TM)"),
-        (M + 300, "COPYRIGHT GREENYBEANY(C) 2026"),
-        (M + 760, "ROBOTICS"),
-        (M + 1010, "VER V2.06"),
-        (M + 1310, "PORT......3"),
-    ]
-    for x, s in cells:
-        text(d, (x, y), s, f_head, theme["mid"], tracking=2.4)
+    # ---- top strip + wordmark -------------------------------------------- #
+    label(d, (M + 4, 30), "@" + USER.upper(), theme)
+    label(d, (W - M - 4, 30), "BRATISLAVA, SK  /  UTC+1", theme,
+          align="right")
 
-    # ---- menu bar --------------------------------------------------------- #
-    bar = (M, 66, W - M, 124)
-    frame(d, bar, theme["rule"], radius=10)
-    items = ["SUMMARY", "PROJECTS", "STACK", "BOOT", "MORE+"]
-    inner = (W - 2 * M) - 96
-    step = inner / (len(items) - 1)
-    for i, s in enumerate(items):
-        text(d, (M + 48 + i * step, 82), s, f_menu, theme["bright"],
-             tracking=2.0, align="center" if 0 < i < len(items) - 1 else
-             ("left" if i == 0 else "right"))
-
-    # ---- main frame ------------------------------------------------------- #
-    top = 146
-    bot = 1118
-    frame(d, (M, top, W - M, bot), theme["rule"])
-
-    split = M + 862
-    left = (M + 12, top + 12, split - 12, bot - 12)
-    right = (split + 12, top + 12, W - M - 12, bot - 12)
-    frame(d, left, theme["rule"])
-    frame(d, right, theme["rule"])
-
-    # ---- left panel: the log --------------------------------------------- #
-    lx = left[0] + 16
-    ly = left[1] + 14
-    lh = 16
-    cols = int((left[2] - left[0] - 34) / f_tiny.getlength("M"))
-
-    lines = []
-    for tone, s in LOG_HEAD:
-        lines.append((tone if tone in theme else "dim", s))
-    lines.append(("faint", ""))
-    for s in wrap(LOG_BODY, cols - 5):
-        lines.append(("faint", "0108 " + s))
-    lines.extend(LOG_TAIL)
-
-    caret = None
-    for i, (tone, s) in enumerate(lines):
-        yy = ly + i * lh
-        if yy > left[3] - 16:
-            break
-        if s.endswith(" _"):
-            s = s[:-1]                       # the caret is drawn per frame
-            caret = (lx + f_tiny.getlength(s), yy)
-        d.text((lx, yy), s, font=f_tiny, fill=theme[tone])
-
-    # display type over the log, the way the reference stacks it; it is the
-    # one element re-rolled on every frame, so the slices never settle
-    glitch_at = (lx - 10, ly + 27 * lh - 10)
-
-    # ---- right panel: portrait ------------------------------------------- #
-    portrait(d, (right[0] + 18, right[1] + 16, right[2] - 18, right[3] - 16),
-             theme, cw=9, ch=12, gamma=0.92)
-
-    # ---- bottom left: the batch file ------------------------------------- #
-    by = bot + 26
-    bx = M + 6
-    batch = [
-        ("mid", "ECHO OFF"),
-        ("dim", "TITLE  GREENYBEANY #0416"),
-        ("dim", "MODE CON: COLS=180 LINES=78"),
-        ("dim", "CLS"),
-        ("faint", ""),
-        ("mid", ":: BIOS BOOT SCREEN"),
-        ("faint", "ECHO"),
-    ]
-    for i, (tone, s) in enumerate(batch):
-        d.text((bx, by + i * 19), s, font=f_small, fill=theme[tone])
-
-    ey = by + len(batch) * 19 + 4
-    for i, s in enumerate(ECHO_LINES):
-        d.text((bx, ey + i * 19), s, font=f_small, fill=theme["dim"])
-
-    # ---- bottom middle: memory banks ------------------------------------- #
-    # labels are static; the cells themselves are refreshed per frame so one
-    # of them can drop out like a bad module
-    f_bank_l = mono(17, True)
-    f_bank = mono(21, True)
-    bank_x = M + 566
-    cell_w = 166
-    banks = []
-    for row, (label, vals) in enumerate([("BANK 1", BANK1), ("BANK 2", BANK2)]):
-        yy = by + 12 + row * 62
-        text(d, (bank_x, yy + 4), label, f_bank_l, theme["mid"], tracking=2)
-        for c, v in enumerate(vals):
-            banks.append((bank_x + 118 + c * cell_w, yy, v))
-
-    # ---- bottom right: the little config box ----------------------------- #
-    box = (W - M - 366, by + 4, W - M - 6, by + 128)
-    frame(d, box, theme["rule"])
-    f_nano = mono(11)
-    nano = [
-        "CPU 0 .... BEANY CORE @ 4.1 GHZ",
-        "IDE 0 .... /dev/quest    ONLINE",
-        "IDE 1 .... /dev/box      ONLINE",
-        "IDE 2 .... /dev/drive    ONLINE",
-        "NET 0 .... github.com/" + USER,
-        "LOC 0 .... BRATISLAVA, SK  UTC+1",
-        "",
-        "EXIT ..... SAVE & WRITE MAIN",
-    ]
-    for i, s in enumerate(nano):
-        d.text((box[0] + 12, box[1] + 10 + i * 14), s,
-               font=f_nano, fill=theme["dim"])
-
-    # ---- giant wordmark --------------------------------------------------- #
-    wm_font = mono(96, True)
     wm = "GREENYBEANY"
-    wx = W - M - 44
-    wy = H - 176
-    text(d, (wx + 4, wy + 4), wm, wm_font, theme["wordmark"], 14, align="right")
-    text(d, (wx, wy), wm, wm_font, theme["wordmark_edge"], 14, align="right")
-    text(d, (W - M - 6, H - 46), "(C)", mono(18, True), theme["wordmark_edge"],
-         align="right")
+    pitch = (W - 2 * M) / dot_cols(wm)
+    dot_text(img, (M, 72), wm, pitch, theme["text"], off=theme["off"],
+             r=pitch * 0.36, off_r=pitch * 0.16)
+
+    sub_y = 72 + 7 * pitch + 30
+    text(d, (M + 4, sub_y), "ROBOTICS & CYBERNETICS STUDENT  /  FEI STU",
+         sans(24, "SemiBold"), theme["text"], tracking=2.5)
+    text(d, (W - M - 4, sub_y), "I BUILD THINGS THAT MOVE.",
+         sans(24), theme["dim"], tracking=2.5, align="right")
+
+    # ---- tile grid -------------------------------------------------------- #
+    g = 16
+    r1 = (sub_y + 62, sub_y + 62 + 310)
+    r2 = (r1[1] + g, r1[1] + g + 310)
+
+    def cols(widths, row):
+        x, out = M, []
+        for w in widths:
+            out.append((x, row[0], x + w, row[1]))
+            x += w + g
+        return out
+
+    t_clock, t_about, t_sys = cols([560, 560, 580], r1)
+    t_arm, t_ring, t_plot = cols([700, 400, 600], r2)
+    for b in (t_clock, t_about, t_sys, t_arm, t_ring, t_plot):
+        tile(img, b, theme)
+    pad = 34
+
+    # clock
+    label(d, (t_clock[0] + pad, t_clock[1] + pad), "LOCAL TIME", theme)
+    cp = 16
+    clock = "04:16"
+    cx = (t_clock[0] + t_clock[2]) / 2 - dot_cols(clock) * cp / 2
+    cy = t_clock[1] + 110
+    dot_text(img, (cx, cy), clock, cp, theme["text"], off=theme["off"])
+    colon_x = cx + (dot_cols("04") + 1) * cp
+    label(d, (t_clock[0] + pad, t_clock[3] - pad - 18), "CET", theme, "faint")
+    label(d, (t_clock[2] - pad, t_clock[3] - pad - 18), "#0416", theme,
+          "faint", align="right")
+
+    # about
+    label(d, (t_about[0] + pad, t_about[1] + pad), "ABOUT", theme)
+    f_about = sans(23)
+    for i, line in enumerate(wrap(ABOUT, f_about,
+                                  t_about[2] - t_about[0] - 2 * pad)):
+        d.text((t_about[0] + pad, t_about[1] + 82 + i * 33), line,
+               font=f_about, fill=theme["text"])
+
+    # subsystems
+    label(d, (t_sys[0] + pad, t_sys[1] + pad), "SUBSYSTEMS", theme)
+    f_sys = sans(21, "SemiBold")
+    for i, (name, on) in enumerate(SUBSYSTEMS):
+        y = t_sys[1] + 80 + i * 36
+        text(d, (t_sys[0] + pad, y), name, f_sys,
+             theme["text"] if on else theme["faint"], tracking=1.5)
+        text(d, (t_sys[2] - pad - 30, y + 2), "ON" if on else "OFF",
+             sans(16, "SemiBold"), theme["dim"] if on else theme["faint"],
+             tracking=2, align="right")
+        dot(img, (t_sys[2] - pad - 6, y + 12), 6,
+            theme["text"] if on else theme["off"])
+
+    # arm: labels are static, the arm itself is redrawn per frame
+    label(d, (t_arm[0] + pad, t_arm[1] + pad), "ARM  /  3 DOF", theme)
+    arm_grid = Grid((t_arm[0] + 24, t_arm[1] + 70, t_arm[2] - 24,
+                     t_arm[3] - 24), 11)
+    arm_bg = img.crop(t_arm)
+    arm_grid.blank(img, theme["off"], r=2.2)
+    base = (t_arm[0] + 200, t_arm[3] - 48)
+    for k in range(-4, 5):
+        dot(img, arm_grid.at(*arm_grid.cell(base[0] + k * 11, base[1] + 14)),
+            arm_grid.p * 0.36, theme["dim"])
+    links = (150, 140, 66)
+    rest = (78, -52, -34)
+    reach = (30, -10, -52)
+    target = arm_pose(base, links, reach)[-1]
+
+    # caffeine ring: the one red element on the page
+    label(d, (t_ring[0] + pad, t_ring[1] + pad), "CAFFEINE", theme)
+    rc = ((t_ring[0] + t_ring[2]) / 2, (t_ring[1] + t_ring[3]) / 2 + 18)
+    R, N, level = 96, 56, 0.72
+    lit = int(N * level)
+    ring = []
+    for k in range(N):
+        a = -math.pi / 2 + 2 * math.pi * k / N
+        ring.append((rc[0] + R * math.cos(a), rc[1] + R * math.sin(a)))
+        dot(img, ring[-1], 5, theme["accent"] if k < lit else theme["off"])
+    dot_text(img, (rc[0] - 10, rc[1] - 36), "72", 8, theme["text"],
+             align="center")
+    text(d, (rc[0] + 38, rc[1] - 4), "%", sans(22, "SemiBold"), theme["dim"])
+    text(d, (rc[0], rc[1] + 34), "SATURATING", sans(13, "SemiBold"),
+         theme["faint"], tracking=2, align="center")
+
+    # step response
+    label(d, (t_plot[0] + pad, t_plot[1] + pad), "STEP RESPONSE", theme)
+    label(d, (t_plot[2] - pad, t_plot[1] + pad), "Z 0.30  /  WN 4.0", theme,
+          "faint", align="right")
+    pg = Grid((t_plot[0] + 30, t_plot[1] + 76, t_plot[2] - 30,
+               t_plot[3] - 30), 10)
+    pg.blank(img, theme["off"], r=2.0)
+    z, wn = 0.30, 4.0
+    wd = wn * math.sqrt(1 - z * z)
+    phi = math.acos(z)
+    top_row, bot_row = 2, pg.rows - 2
+
+    def y_row(v):
+        return int(round(bot_row - (bot_row - top_row) * v / 1.45))
+
+    set_row = y_row(1.0)
+    pg.light(img, [(i, set_row) for i in range(0, pg.cols, 2)], theme["faint"],
+             r=pg.p * 0.3)
+    curve = []
+    prev = None
+    for i in range(pg.cols):
+        t = 3.2 * i / (pg.cols - 1)
+        v = 1 - math.exp(-z * wn * t) / math.sqrt(1 - z * z) * math.sin(
+            wd * t + phi)
+        row = y_row(v)
+        col = []
+        if prev is not None:
+            step = 1 if row > prev else -1
+            col = [(i, rr) for rr in range(prev + step, row, step)]
+        curve.append(col + [(i, row)])
+        prev = row
+
+    # bottom strip
+    label(d, (M + 4, H - 46), "GITHUB.COM/" + USER.upper(), theme, "faint")
+    label(d, (W - M - 4, H - 46), "3 MODULES ONLINE", theme, "faint",
+          align="right")
 
     # ---- frames ----------------------------------------------------------- #
-    glitch_font = mono(88, True)
-    band = 150
-    travel = (right[3] - right[1]) + band
-
+    reveal = frames - 4
     out = []
     for t in range(frames):
         f = img.copy()
         fd = ImageDraw.Draw(f)
 
-        # refresh band crawling down the portrait
-        sweep(f, (right[0] + 1, right[1] + 1, right[2], right[3]),
-              right[1] - band + travel * t / frames, band, theme, 0.5)
+        if t % 8 >= 4:
+            for rr in (1, 5):
+                p = (colon_x + 0.5 * cp, cy + (rr + 0.5) * cp)
+                dot(f, p, cp * 0.36 + 1, theme["tile"])
+                dot(f, p, cp * 0.2, theme["off"])
 
-        g = glitch_text("HELLO WORLD", glitch_font, 6, theme["bright"],
-                        theme["rule"], seed=40 + t)
-        f.paste(g, (glitch_at[0] + (t % 3) - 1, glitch_at[1]), g)
+        s = ease(t / frames)
+        pose = [a + (b - a) * s for a, b in zip(rest, reach)]
+        draw_arm(f, arm_grid, arm_pose(base, links, pose), theme, target)
+        text(fd, (t_arm[2] - pad, t_arm[1] + pad),
+             "  ".join("J%d %+04d" % (k + 1, round(a))
+                       for k, a in enumerate(pose)),
+             sans(16, "SemiBold"), theme["faint"], tracking=1.5,
+             align="right")
 
-        for i, (bxx, byy, v) in enumerate(banks):
-            dead = (t + i * 5) % 37 < 2
-            text(fd, (bxx, byy), v, f_bank,
-                 theme["faint"] if dead else theme["bright"], tracking=1.5)
+        n = len(curve) if t >= reveal else int(len(curve) * (t + 1) / reveal)
+        for i in range(n):
+            pg.light(f, curve[i], theme["text"])
 
-        if caret and t % frames < frames * 0.55:
-            fd.text(caret, "_", font=f_tiny, fill=theme["bright"])
+        head = ring[lit - 1]
+        dot(f, head, 5 + (2 if t % 4 < 2 else 0), theme["accent"])
 
         out.append(f)
 
@@ -561,248 +521,225 @@ def render_hero(theme, out_path, frames=16, duration=110):
 
 PROJECTS = [
     {
-        "slug": "questmaker",
+        "slug": "triptych",
         "index": "01",
-        "name": "QUEST MAKER",
-        "full": "BEANY'S DISCORD QUEST MAKER",
-        "url": "https://github.com/Greenythebeany/Beany-s-Discord-Quest-Maker",
-        "desc": "TUI app that clears Discord's Orb quests for games you do not own. "
-                "Spoofs the play session, watches the progress endpoint, claims the reward.",
-        "specs": [("LANG", "PYTHON"), ("TYPE", "TUI"), ("IFACE", "DISCORD API")],
-        "art": [
-            "....########....",
-            "...##......##...",
-            "..##..####..##..",
-            ".##..##..##..##.",
-            ".##..##..##..##.",
-            ".##..######..##.",
-            "..##..####..##..",
-            "...##......##...",
-            "....########....",
-            "......####......",
-            ".......##.......",
-            "......####......",
-        ],
+        "name": "TRIPTYCH",
+        "url": "https://github.com/Greenythebeany/triptych",
+        "desc": "Free, open-source music app for your own Jellyfin server. Spotify, "
+                "Apple Music or Nothing style, synced lyrics, offline downloads, "
+                "stats and Wrapped.",
+        "specs": ["JAVASCRIPT", "MUSIC", "JELLYFIN"],
+        "widget": "eq",
     },
     {
-        "slug": "beanybox",
+        "slug": "beanyik",
         "index": "02",
-        "name": "BEANYBOX",
-        "full": "BEANYBOX",
-        "url": "https://github.com/Greenythebeany/BeanyBox",
-        "desc": "Terminal-styled desktop mail client for Gmail. Threads, labels and "
-                "search rendered as a green-on-black console instead of another web view.",
-        "specs": [("LANG", "PYTHON"), ("TYPE", "DESKTOP"), ("IFACE", "GMAIL API")],
-        "art": [
-            "################",
-            "##............##",
-            "##.##......##.##",
-            "##...##..##...##",
-            "##.....##.....##",
-            "##...##..##...##",
-            "##.##......##.##",
-            "##............##",
-            "################",
-            "..##########....",
-            "....######......",
-            "......##........",
-        ],
+        "name": "BEANYIK",
+        "url": "https://github.com/Greenythebeany/BeanyIK",
+        "desc": "Drag and drop robot kinematics builder. DH parameters or custom "
+                "matrices, forward and inverse kinematics solved live as the arm "
+                "is assembled.",
+        "specs": ["JAVASCRIPT", "ELECTRON", "DH / IK"],
+        "widget": "arm",
     },
     {
         "slug": "beanydrive",
         "index": "03",
         "name": "BEANYDRIVE",
-        "full": "BEANYDRIVE",
         "url": "https://github.com/Greenythebeany/BeanyDrive",
         "desc": "Turns a Discord channel into a personal cloud drive. Chunks files, "
                 "uploads them as attachments, rebuilds them on the way back down.",
-        "specs": [("LANG", "PYTHON"), ("TYPE", "STORAGE"), ("IFACE", "DISCORD API")],
-        "art": [
-            "..############..",
-            ".##..........##.",
-            "##..########..##",
-            "##..##....##..##",
-            "##..##....##..##",
-            "##..########..##",
-            "##............##",
-            "##..##########..",
-            ".##..........##.",
-            "..############..",
-            "....##....##....",
-            "..####....####..",
-        ],
+        "specs": ["JAVASCRIPT", "STORAGE", "DISCORD API"],
+        "widget": "drive",
     },
 ]
 
 
+def card_widget(kind, img, d, box, theme, t, frames, seed):
+    x0, y0, x1, y1 = box
+    pad = 22
+    if kind == "eq":
+        label(d, (x0 + pad, y0 + pad - 2), "NOW PLAYING", theme, size=14)
+        grid = Grid((x0 + 18, y0 + 52, x1 - 18, y1 - 54), 12)
+        grid.blank(img, theme["off"], r=2.4)
+        rng = random.Random(seed)
+        ph = [rng.uniform(0, 2 * math.pi) for _ in range(grid.cols)]
+        for i in range(grid.cols):
+            if i % 2:
+                continue
+            a = 2 * math.pi * t / frames
+            v = 0.5 + 0.28 * math.sin(a * 2 + ph[i]) + 0.18 * math.sin(
+                a * 3 + ph[i] * 1.7)
+            hgt = max(1, int(round(v * grid.rows)))
+            grid.light(img, [(i, grid.rows - 1 - k) for k in range(hgt)],
+                       theme["text"])
+        ly = y1 - 32
+        lx0, lx1 = x0 + 24, x1 - 24
+        n = 30
+        head = int(n * (0.2 + 0.6 * t / frames))
+        for k in range(n + 1):
+            dot(img, (lx0 + (lx1 - lx0) * k / n, ly), 2.6,
+                theme["dim"] if k < head else theme["off"])
+        dot(img, (lx0 + (lx1 - lx0) * head / n, ly), 6.5, theme["accent"])
+
+    elif kind == "arm":
+        label(d, (x0 + pad, y0 + pad - 2), "SOLVING IK", theme, size=14)
+        grid = Grid((x0 + 14, y0 + 48, x1 - 14, y1 - 14), 9)
+        grid.blank(img, theme["off"], r=1.8)
+        base = (x0 + 98, y1 - 34)
+        for k in range(-3, 4):
+            dot(img, grid.at(*grid.cell(base[0] + k * 9, base[1] + 12)),
+                grid.p * 0.36, theme["dim"])
+        links = (82, 70, 34)
+        rest, reach = (78, -48, -24), (30, -6, -58)
+        target = arm_pose(base, links, reach)[-1]
+        s = ease(t / frames)
+        pose = [a + (b - a) * s for a, b in zip(rest, reach)]
+        draw_arm(img, grid, arm_pose(base, links, pose), theme, target)
+
+    elif kind == "drive":
+        label(d, (x0 + pad, y0 + pad - 2), "UPLOADING", theme, size=14)
+        cols, rows = 8, 4
+        total = cols * rows
+        done = int(total * (0.25 + 0.7 * t / frames))
+        cw = (x1 - x0 - 2 * pad) / cols
+        ch = 38
+        gy = y0 + 62
+        for k in range(total):
+            cx = x0 + pad + (k % cols) * cw + cw / 2
+            cy = gy + (k // cols) * ch + ch / 2
+            col = (theme["text"] if k < done else
+                   theme["accent"] if k == done else theme["off"])
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    dot(img, (cx + dx * 8, cy + dy * 8), 3.1, col)
+        label(d, (x0 + pad, y1 - pad - 16),
+              "CHUNK %02d / %02d" % (done + 1, total), theme, "faint",
+              size=14)
+        label(d, (x1 - pad, y1 - pad - 16), "8 MB EACH", theme, "faint",
+              size=14, align="right")
+
+
 def render_card(p, theme, out_path, frames=14, duration=120):
-    W, H = 1800, 372
+    W, H = 1800, 336
     img = Image.new("RGB", (W, H), theme["bg"])
     d = ImageDraw.Draw(img)
     M = 34
 
-    f_head = mono(19, True)
-    f_small = mono(17)
-    f_spec = mono(18, True)
-    f_tiny = mono(13)
+    card = (M, 16, W - M, H - 16)
+    tile(img, card, theme, radius=32)
 
-    # header strip
-    text(d, (M, 20), ">> MODULE " + p["index"] + "/03", f_head,
-         theme["mid"], tracking=2.4)
-    text(d, (W / 2, 20), p["full"], f_head, theme["mid"], tracking=2.4,
-         align="center")
-    text(d, (W - M, 20), "STATUS: ONLINE", f_head, theme["bright"],
-         tracking=2.4, align="right")
+    # icon: the project's own app icon, as shipped in its repo
+    side = card[3] - card[1] - 40
+    icon = (card[0] + 20, card[1] + 20, card[0] + 20 + side, card[1] + 20 + side)
+    art = Image.open(os.path.join(ICONS, p["slug"] + ".png")).convert("RGBA")
+    art = art.resize((side, side), Image.LANCZOS)
+    img.paste(art, icon[:2], art)
 
-    top, bot = 58, H - 26
-    frame(d, (M, top, W - M, bot), theme["rule"])
+    tx = icon[2] + 40
+    label(d, (tx, card[1] + 30), "MODULE %s / 03" % p["index"], theme)
+    dot_text(img, (tx, card[1] + 64), p["name"], 8, theme["text"])
+    f_desc = sans(21)
+    for i, line in enumerate(wrap(p["desc"], f_desc, 720)):
+        d.text((tx, card[1] + 144 + i * 29), line, font=f_desc,
+               fill=theme["dim"])
 
-    # ghost index, layered under the copy the way the hero wordmark is
-    text(d, (W - M - 34, top + 26), p["index"], mono(150, True),
-         theme["wordmark"], tracking=8, align="right")
+    cx = tx
+    f_chip = sans(15, "SemiBold")
+    for s in p["specs"]:
+        w = width_of(s, f_chip, 2) + 36
+        tile(img, (cx, card[3] - 62, cx + w, card[3] - 26), theme,
+             fill="tile", radius=18)
+        text(d, (cx + 18, card[3] - 54), s, f_chip, theme["dim"], tracking=2)
+        cx += w + 12
 
-    # left cell: the block glyph, drawn as rects so the pixels stay square
-    cell = (M + 12, top + 12, M + 12 + (bot - top - 24), bot - 12)
-    frame(d, cell, theme["rule"])
-    art = p["art"]
-    aw, ah = len(art[0]), len(art)
-    step = int(min((cell[2] - cell[0]) * 0.82 / aw,
-                   (cell[3] - cell[1]) * 0.82 / ah))
-    ax = cell[0] + ((cell[2] - cell[0]) - aw * step) / 2
-    ay = cell[1] + ((cell[3] - cell[1]) - ah * step) / 2
-    for j, row in enumerate(art):
-        for i, ch in enumerate(row):
-            x, y = ax + i * step, ay + j * step
-            if ch == "#":
-                d.rectangle([x, y, x + step - 2, y + step - 2],
-                            fill=theme["bright"])
-            else:
-                d.rectangle([x + step / 2 - 1, y + step / 2 - 1,
-                             x + step / 2, y + step / 2], fill=theme["faint"])
+    wbox = (1124, card[1] + 20, 1448, card[3] - 20)
+    tile(img, wbox, theme, fill="inset", radius=22, edge=False)
 
-    # title -- re-rolled per frame
-    tx = cell[2] + 42
-    glitch_at = (tx - 18, top + 16)
-
-    ty = top + 104
-    for i, line in enumerate(wrap(p["desc"], 88)):
-        d.text((tx, ty + i * 25), line, font=f_small, fill=theme["dim"])
-
-    sy = ty + 2 * 25 + 26
-    for i, (k, v) in enumerate(p["specs"]):
-        x = tx + i * 286
-        text(d, (x, sy + 2), k + " ....", f_tiny, theme["faint"], tracking=1)
-        text(d, (x + 92, sy), v, f_spec, theme["mid"], tracking=1.5)
-
-    text(d, (W - M - 26, bot - 70), p["url"].replace("https://", ""),
-         f_tiny, theme["faint"], tracking=1, align="right")
-
-    # ---- frames ----------------------------------------------------------- #
-    glitch_font = mono(58, True)
-    f_press = mono(20, True)
-    seed0 = sum(map(ord, p["slug"]))
-    band = 90
-    travel = (cell[3] - cell[1]) + band
+    dot_text(img, (card[2] - 40, card[1] + 34), p["index"], 20, theme["faint"],
+             off=theme["off"], align="right", r=7)
+    text(d, (card[2] - 70, card[3] - 56), "OPEN ON GITHUB",
+         sans(19, "SemiBold"), theme["text"], tracking=2.4, align="right")
+    dot_text(img, (card[2] - 40, card[3] - 56), ">", 3.4, theme["text"],
+             align="right", r=1.5)
 
     out = []
+    seed = sum(map(ord, p["slug"]))
     for t in range(frames):
         f = img.copy()
-        fd = ImageDraw.Draw(f)
-
-        sweep(f, (cell[0] + 1, cell[1] + 1, cell[2], cell[3]),
-              cell[1] - band + travel * t / frames, band, theme, 0.45)
-
-        g = glitch_text(p["name"], glitch_font, 5, theme["bright"],
-                        theme["rule"], seed=seed0 + t)
-        f.paste(g, (glitch_at[0] + (t % 3) - 1, glitch_at[1]), g)
-
-        # the call to action pulses rather than hard-blinks
-        phase = abs((t / frames) * 2 - 1)
-        text(fd, (W - M - 26, bot - 44), "PRESS <ENTER> TO OPEN >>", f_press,
-             mix(theme["rule"], theme["hot"], phase), tracking=2, align="right")
-
+        card_widget(p["widget"], f, ImageDraw.Draw(f), wbox, theme, t, frames,
+                    seed)
         out.append(f)
 
     return save_gif(out, out_path, duration)
 
 
 # --------------------------------------------------------------------------- #
-# detected devices table
+# stack list
 # --------------------------------------------------------------------------- #
 
 STACK = [
-    ("CH 0 MASTER", "C / C++", "EMBEDDED", "OK"),
-    ("CH 0 SLAVE", "PYTHON", "TOOLING", "OK"),
-    ("CH 1 MASTER", "JAVA", "COURSEWORK", "OK"),
-    ("CH 1 SLAVE", "JAVASCRIPT", "WEB", "OK"),
-    ("CH 2 MASTER", "MATLAB", "MODELLING", "OK"),
-    ("CH 2 SLAVE", "SIMULINK", "SIMULATION", "OK"),
-    ("CH 3 MASTER", "ARDUINO", "HARDWARE", "OK"),
-    ("CH 3 SLAVE", "GIT / GITHUB", "VERSIONING", "OK"),
-    ("USB 0", "LINUX (FEDORA / UBUNTU)", "DAILY DRIVER", "OK"),
-    ("USB 1", "VS CODE / CLION / IDEA", "EDITORS", "OK"),
+    ("C / C++", "EMBEDDED"),
+    ("PYTHON", "TOOLING"),
+    ("JAVA", "COURSEWORK"),
+    ("JAVASCRIPT", "WEB / ELECTRON"),
+    ("MATLAB", "MODELLING"),
+    ("SIMULINK", "SIMULATION"),
+    ("ARDUINO", "HARDWARE"),
+    ("GIT / GITHUB", "VERSIONING"),
+    ("LINUX (FEDORA / UBUNTU)", "DAILY DRIVER"),
+    ("VS CODE / CLION / IDEA", "EDITORS"),
 ]
 
 
 def render_stack(theme, out_path, duration=150):
     W = 1800
-    H = 120 + len(STACK) * 30 + 92
+    rh = 46
+    H = 176 + len(STACK) * rh + 40
     img = Image.new("RGB", (W, H), theme["bg"])
     d = ImageDraw.Draw(img)
     M = 34
 
-    f_head = mono(19, True)
-    f_row = mono(19)
-    f_rowb = mono(19, True)
+    box = (M, 16, W - M, H - 16)
+    tile(img, box, theme, radius=32)
+    x0, x1 = box[0] + 40, box[2] - 40
 
-    text(d, (M, 22), "DETECTING IDE DEVICES ...", f_head, theme["mid"],
-         tracking=2.4)
-    text(d, (W - M, 22), "10 DEVICES FOUND", f_head, theme["bright"],
-         tracking=2.4, align="right")
+    dot_text(img, (x0, box[1] + 36), "STACK", 7, theme["text"])
+    label(d, (x1, box[1] + 50), "%d DEVICES" % len(STACK), theme,
+          align="right")
 
-    top = 62
-    bot = H - 30
-    frame(d, (M, top, W - M, bot), theme["rule"])
+    hy = box[1] + 112
+    cx = [x0, x0 + 90, x0 + 760]
+    for s, x in zip(["#", "DEVICE", "FUNCTION"], cx):
+        label(d, (x, hy), s, theme, "faint", size=14)
+    label(d, (x1, hy), "STATUS", theme, "faint", size=14, align="right")
 
-    cx = [M + 26, M + 300, M + 860, W - M - 26]
-    hy = top + 18
-    for label, x in zip(["CHANNEL", "DEVICE", "FUNCTION"], cx[:3]):
-        text(d, (x, hy), label, mono(15, True), theme["faint"], tracking=2)
-    text(d, (cx[3], hy), "MODE", mono(15, True), theme["faint"], tracking=2,
-         align="right")
-    d.line([(M + 14, hy + 26), (W - M - 14, hy + 26)], fill=theme["rule"])
+    f_dev = sans(24, "SemiBold")
+    f_fn = sans(20)
+    y0 = hy + 36
+    for i, (dev, fn) in enumerate(STACK):
+        y = y0 + i * rh
+        d.line([(x0, y), (x1, y)], fill=theme["edge"])
+        text(d, (cx[0], y + 12), "%02d" % (i + 1), sans(18, "SemiBold"),
+             theme["faint"], tracking=1.5)
+        text(d, (cx[1], y + 9), dev, f_dev, theme["text"], tracking=1.5)
+        text(d, (cx[2], y + 12), fn, f_fn, theme["dim"], tracking=1.5)
 
-    for i, (chan, dev, fn, st) in enumerate(STACK):
-        y = hy + 42 + i * 30
-        d.text((cx[0], y), chan, font=f_row, fill=theme["dim"])
-        d.text((cx[1], y), dev, font=f_rowb, fill=theme["bright"])
-        d.text((cx[2], y), fn, font=f_row, fill=theme["mid"])
-
-    y = hy + 42 + len(STACK) * 30 + 14
-    d.line([(M + 14, y), (W - M - 14, y)], fill=theme["rule"])
-    text(d, (cx[0], y + 14), "ALL DEVICES INITIALISED -- PRESS <ANY KEY>",
-         mono(16), theme["faint"], tracking=1)
-
-    # ---- frames: the probe walks the table, one device at a time ---------- #
     out = []
     for t in range(len(STACK) + 2):
         f = img.copy()
         fd = ImageDraw.Draw(f)
-        for i, (chan, dev, fn, st) in enumerate(STACK):
-            ry = hy + 42 + i * 30
+        for i in range(len(STACK)):
+            y = y0 + i * rh + rh / 2
             if i > t:
-                text(fd, (cx[3], ry), "....", f_rowb, theme["faint"],
-                     align="right")
+                state, col, tone = "", theme["off"], "faint"
             elif i == t:
-                fd.rectangle([M + 14, ry - 4, W - M - 14, ry + 26],
-                             fill=theme["faint"])
-                fd.text((cx[0], ry), chan, font=f_row, fill=theme["hot"])
-                fd.text((cx[1], ry), dev, font=f_rowb, fill=theme["hot"])
-                fd.text((cx[2], ry), fn, font=f_row, fill=theme["hot"])
-                text(fd, (cx[3], ry), "????", f_rowb, theme["hot"],
-                     align="right")
+                state, col, tone = "PROBING", theme["accent"], "dim"
             else:
-                text(fd, (cx[3], ry), st, f_rowb, theme["hot"], align="right")
+                state, col, tone = "OK", theme["text"], "dim"
+            label(fd, (x1 - 26, y - 9), state, theme, tone, size=15,
+                  align="right")
+            dot(f, (x1 - 6, y), 6, col)
         out.append(f)
 
     return save_gif(out, out_path, duration)
@@ -812,34 +749,25 @@ def render_stack(theme, out_path, duration=150):
 # footer
 # --------------------------------------------------------------------------- #
 
-def render_footer(theme, out_path, duration=420):
-    W, H = 1800, 178
+def render_footer(theme, out_path, duration=600):
+    W, H = 1800, 196
     img = Image.new("RGB", (W, H), theme["bg"])
     d = ImageDraw.Draw(img)
     M = 34
 
-    f_prompt = mono(34, True)
-    prompt = "C:\\USERS\\GREENYBEANY> "
-
-    frame(d, (M, 16, W - M, 124), theme["rule"], radius=10)
-    # the caret is part of the line's width, so the prompt does not shift
-    # when it blinks off
-    full = width_of(prompt + "_", f_prompt, 3)
-    px = W / 2 - full / 2
-    text(d, (px, 36), prompt, f_prompt, theme["bright"], tracking=3)
-    caret = (px + width_of(prompt, f_prompt, 3) + 3, 36)
-
-    text(d, (W / 2, 84), "THANKS FOR STOPPING BY  --  SYSTEM HALTED",
-         mono(18), theme["dim"], tracking=3, align="center")
-    text(d, (W / 2, H - 34), "github.com/" + USER, mono(15), theme["faint"],
-         tracking=2, align="center")
+    box = (M, 16, W - M, H - 16)
+    tile(img, box, theme, radius=32)
+    msg = "THANKS FOR STOPPING BY"
+    p = 7
+    w = dot_text(img, (W / 2 + 18, 52), msg, p, theme["text"], align="center")
+    rec = (W / 2 + 18 - w / 2 - 34, 52 + 3.5 * p)
+    label(d, (W / 2, 122), "GITHUB.COM/" + USER.upper(), theme, "faint",
+          align="center")
 
     out = []
     for t in range(2):
         f = img.copy()
-        if t == 0:
-            ImageDraw.Draw(f).text(caret, "_", font=f_prompt,
-                                   fill=theme["bright"])
+        dot(f, rec, 9, theme["accent"] if t == 0 else theme["off"])
         out.append(f)
 
     return save_gif(out, out_path, duration)
@@ -853,12 +781,12 @@ def render_footer(theme, out_path, duration=420):
 # --cb the cell stroke. snk emits no --c0 in its dark block, which would leave
 # pale cells on a dark canvas, so every variant declares the full set.
 # --ce sits a hair off the page background rather than exactly on it, so an
-# empty day still reads as a cell instead of vanishing.
+# empty day still reads as a cell instead of vanishing. The snake is the red.
 SNAKE = {
-    "dark": ("--cb:#7cf5d52e;--cs:#7cf5d5;--ce:#11201d;--c0:#11201d;"
-             "--c1:#0e3a32;--c2:#17715f;--c3:#2fa98f;--c4:#7cf5d5"),
-    "light": ("--cb:#0b2e2824;--cs:#0c3c33;--ce:#f4f8f6;--c0:#f4f8f6;"
-              "--c1:#cfe8df;--c2:#8ccbb7;--c3:#3f9c84;--c4:#0c3c33"),
+    "dark": ("--cb:#ffffff14;--cs:#d71921;--ce:#161b22;--c0:#161b22;"
+             "--c1:#3a3a3a;--c2:#6e6e6e;--c3:#a8a8a8;--c4:#f2f2f2"),
+    "light": ("--cb:#0000001a;--cs:#d71921;--ce:#f2f2f2;--c0:#f2f2f2;"
+              "--c1:#d0d0d0;--c2:#9a9a9a;--c3:#5c5c5c;--c4:#0e0e0e"),
 }
 
 
