@@ -525,6 +525,7 @@ PROJECTS = [
         "index": "01",
         "name": "TRIPTYCH",
         "url": "https://github.com/Greenythebeany/triptych",
+        "site": "https://triptych.greenybeany.dev/",
         "desc": "Free, open-source music app for your own Jellyfin server. Spotify, "
                 "Apple Music or Nothing style, synced lyrics, offline downloads, "
                 "stats and Wrapped.",
@@ -536,6 +537,7 @@ PROJECTS = [
         "index": "02",
         "name": "BEANYIK",
         "url": "https://github.com/Greenythebeany/BeanyIK",
+        "site": "https://greenybeany.dev/BeanyIK/",
         "desc": "Drag and drop robot kinematics builder. DH parameters or custom "
                 "matrices, forward and inverse kinematics solved live as the arm "
                 "is assembled.",
@@ -658,7 +660,8 @@ def render_card(p, theme, out_path, frames=14, duration=120):
 
     dot_text(img, (card[2] - 40, card[1] + 34), p["index"], 20, theme["faint"],
              off=theme["off"], align="right", r=7)
-    text(d, (card[2] - 70, card[3] - 56), "OPEN ON GITHUB",
+    text(d, (card[2] - 70, card[3] - 56),
+         "OPEN WEBSITE" if p.get("site") else "OPEN ON GITHUB",
          sans(19, "SemiBold"), theme["text"], tracking=2.4, align="right")
     dot_text(img, (card[2] - 40, card[3] - 56), ">", 3.4, theme["text"],
              align="right", r=1.5)

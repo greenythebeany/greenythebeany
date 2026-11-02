@@ -4,7 +4,7 @@
   <img alt="GreenyBeany — Robotics &amp; Cybernetics student at FEI STU Bratislava. I build things that move." src="hero-dark.gif">
 </picture>
 
-<a href="https://github.com/Greenythebeany/triptych" title="Triptych — open-source music app for your own Jellyfin server">
+<a href="https://triptych.greenybeany.dev/" title="Triptych — open-source music app for your own Jellyfin server">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="card-triptych-dark.gif">
     <source media="(prefers-color-scheme: light)" srcset="card-triptych-light.gif">
@@ -12,7 +12,7 @@
   </picture>
 </a>
 
-<a href="https://github.com/Greenythebeany/BeanyIK" title="BeanyIK — drag &amp; drop robot kinematics builder">
+<a href="https://greenybeany.dev/BeanyIK/" title="BeanyIK — drag &amp; drop robot kinematics builder">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="card-beanyik-dark.gif">
     <source media="(prefers-color-scheme: light)" srcset="card-beanyik-light.gif">
