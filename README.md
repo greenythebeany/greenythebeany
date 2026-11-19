@@ -34,11 +34,13 @@
   <img alt="Stack — C/C++, Python, Java, JavaScript, MATLAB, Simulink, Arduino, Git, Linux, VS Code / CLion / IDEA" src="stack-dark.gif">
 </picture>
 
+<p align="center">
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="contributions-dark.svg">
   <source media="(prefers-color-scheme: light)" srcset="contributions-light.svg">
   <img alt="Contribution graph, eaten by a snake" src="contributions-dark.svg">
 </picture>
+</p>
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="footer-dark.gif">
